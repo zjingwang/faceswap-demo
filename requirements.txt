@@ -1,0 +1,20 @@
+# faceswap-demo 依赖（以下版本为作者验证过的纯 CPU 环境）
+# 安装: pip install -r requirements.txt
+
+# insightface —— 提供 FaceAnalysis (buffalo_l) 与 inswapper 换脸模型加载。
+# 注意: 作者的测试环境安装的是 GitHub 主分支的 insightface 2.1；
+#   PyPI 上的稳定版是 0.7.3，如遇 API 不兼容，可改用：
+#   pip install git+https://github.com/deepinsight/insightface.git
+insightface
+
+# onnxruntime —— 纯 CPU 推理后端（如需 GPU，请改用 onnxruntime-gpu 并自行配置）
+onnxruntime
+
+# OpenCV —— 图片读写与预处理
+opencv-python
+
+# Gradio —— Web 界面
+gradio
+
+# 数值计算（insightface / opencv 的依赖也会自动带上）
+numpy
