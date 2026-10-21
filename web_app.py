@@ -24,6 +24,7 @@ os.environ.setdefault("GRADIO_ANALYTICS_ENABLED", "False")
 
 import cv2
 import gradio as gr
+import numpy as np
 from tqdm import tqdm
 
 import ai_core
@@ -44,18 +45,17 @@ from voice_utils import (
     process_voice,
     probe_duration_seconds,
 )
-from webcam_session import WebcamSwap
+from live_capture import LiveCaptureSession
 
 BASE = os.path.dirname(os.path.abspath(__file__))
 OUT_DIR = os.path.join(BASE, "output")
 SWAPPER_PATH = os.path.join(BASE, "models", "inswapper_128.onnx")
 VIDEO_AI_WIDTH = 640
 VIDEO_DET_SIZE = 320
-# Gradio stream_every is seconds between webcam captures (NOT AI FPS).
-# 0.15 ≈ 6.7 Hz was the ~7 FPS UI cap; 0.033 ≈ 30 Hz, 0.02 ≈ 50 Hz.
-WEBCAM_STREAM_EVERY = 0.033
 # Restored after offline/fusion so Tab1 keeps its lighter det_size.
-_ACTIVE_WEBCAM_DET = 192
+_ACTIVE_WEBCAM_DET = 160
+# How often Gradio pulls the latest frame from the OpenCV capture thread.
+LIVE_UI_REFRESH = 0.12
 
 
 def _restore_webcam_det() -> None:
@@ -361,42 +361,31 @@ def main() -> int:
     ap = argparse.ArgumentParser(description="AMD DirectML face-swap platform")
     ap.add_argument("--port", type=int, default=7860)
     ap.add_argument("--host", default="127.0.0.1")
-    ap.add_argument("--width", type=int, default=256)
-    ap.add_argument("--det-size", type=int, default=192)
-    ap.add_argument("--det-interval", type=int, default=3)
+    ap.add_argument("--width", type=int, default=320)
+    ap.add_argument("--det-size", type=int, default=160)
     ap.add_argument(
-        "--stream-every",
+        "--ui-refresh",
         type=float,
-        default=WEBCAM_STREAM_EVERY,
-        help="Gradio webcam capture interval seconds (0.033≈30FPS UI)",
+        default=LIVE_UI_REFRESH,
+        help="Gradio preview poll interval (OpenCV runs in background)",
     )
     args = ap.parse_args()
 
     global _ACTIVE_WEBCAM_DET
     _ACTIVE_WEBCAM_DET = int(args.det_size)
-    stream_every = max(0.016, float(args.stream_every))
+    ui_refresh = max(0.05, float(args.ui_refresh))
 
     print(_model_banner(), flush=True)
     print(
-        f"[web_app] webcam defaults: width={args.width} det={args.det_size} "
-        f"interval={args.det_interval} stream_every={stream_every}s "
-        f"(~{1.0 / stream_every:.0f} Hz UI cap)",
+        f"[web_app] live: OpenCV background capture → Gradio preview; "
+        f"width={args.width} det={args.det_size} ui_refresh={ui_refresh}s",
         flush=True,
     )
-    cam = WebcamSwap(
-        frame_width=args.width,
-        det_size=args.det_size,
-        det_interval=args.det_interval,
-    )
+    live = LiveCaptureSession(width=args.width, det_size=args.det_size)
     try:
-        cam.start()
+        ensure_models(det_size=args.det_size, live=True)
     except Exception as e:
         print(f"[web_app] 模型预热失败（可在 UI 中重试）: {e}", flush=True)
-
-    cam_opts = gr.WebcamOptions(
-        mirror=True,
-        constraints={"video": {"frameRate": {"ideal": 30, "max": 60}}},
-    )
 
     with gr.Blocks(title="AMD Face Swap (DirectML)") as demo:
         gr.Markdown(
@@ -405,24 +394,24 @@ def main() -> int:
         )
 
         with gr.Tabs():
-            with gr.Tab("① Webcam 实时换脸"):
+            with gr.Tab("① 实时换脸"):
                 gr.Markdown(
-                    f"开启摄像头 + 上传源脸。AI 宽默认 **{args.width}**、det **{args.det_size}**；"
-                    f"Gradio `stream_every={stream_every}`（≈**{1.0 / stream_every:.0f} Hz** UI，"
-                    "不再锁在 ~7 FPS）。忙则丢帧只留最新；状态栏分列 **AI ms/FPS** 与 **流回调 FPS**。"
+                    "本机 **OpenCV 后台采摄像头 + 换脸**，画面显示在本页预览里"
+                    "（**不弹独立窗口**）。默认宽 "
+                    f"**{args.width}** / det **{args.det_size}**。"
                 )
                 with gr.Row():
                     with gr.Column():
                         src_cam = gr.Image(
-                            label="源脸照片（提供脸，缓存 embedding）",
+                            label="源脸照片（缓存 embedding）",
                             type="numpy",
                             sources=["upload"],
-                            height=300,
+                            height=280,
                             format="jpeg",
                         )
                         width_sl = gr.Slider(
                             160,
-                            320,
+                            400,
                             value=args.width,
                             step=8,
                             label="处理宽度（越小越流畅）",
@@ -430,63 +419,71 @@ def main() -> int:
                         det = gr.Radio(
                             [160, 192, 256, 320],
                             value=args.det_size,
-                            label="人脸检测分辨率（仅 Webcam；离线仍用 320）",
+                            label="检测分辨率",
                         )
-                        interval = gr.Slider(
-                            1,
-                            10,
-                            value=args.det_interval,
-                            step=1,
-                            label="检测跳帧间隔（越大越省，脸部跟踪越粗）",
+                        vcam_ck = gr.Checkbox(
+                            label="输出到 OBS 虚拟摄像头（给微信用）",
+                            value=True,
+                            info="需已安装 OBS Studio；微信里选摄像头「OBS Virtual Camera」",
+                        )
+                        with gr.Row():
+                            start_btn = gr.Button("▶ 开始实时换脸", variant="primary")
+                            stop_btn = gr.Button("⏹ 停止")
+                        help_box = gr.Markdown(
+                            "### 微信视频怎么用换脸\n"
+                            "1. 本机已装 **OBS Studio**（虚拟摄像头驱动）\n"
+                            "2. 勾选「输出到 OBS 虚拟摄像头」→ 点开始\n"
+                            "3. 微信视频通话 → 摄像头选 **OBS Virtual Camera**\n"
+                            "4. 不要用微信直接选物理摄像头，否则对方看到的是真脸\n"
+                            "5. 若虚拟摄像头打不开：先打开一次 OBS，点「启动虚拟摄像头」再关 OBS，然后重试"
                         )
                     with gr.Column():
-                        webcam = gr.Image(
-                            label="摄像头 (Streaming)",
-                            sources=["webcam"],
-                            streaming=True,
+                        preview = gr.Image(
+                            label="实时换脸预览（本机摄像头）",
                             type="numpy",
-                            height=300,
+                            interactive=False,
+                            height=420,
                             format="jpeg",
-                            webcam_options=cam_opts,
                         )
-                preview = gr.Image(
-                    label="实时换脸预览",
-                    type="numpy",
-                    interactive=False,
-                    streaming=True,
-                    height=360,
-                    format="jpeg",
-                )
-                status_cam = gr.Textbox(label="状态", lines=3)
+                status_cam = gr.Textbox(label="状态", lines=2)
 
                 def change_width(v):
-                    cam.width = max(128, int(v))
-                    return f"处理宽度已设为 {cam.width}"
+                    live.width = max(128, int(v))
+                    return f"处理宽度={live.width}"
 
                 def change_det(v):
                     global _ACTIVE_WEBCAM_DET
-                    cam.det_size = int(v)
+                    live.det_size = int(v)
                     _ACTIVE_WEBCAM_DET = int(v)
                     ai_core.set_det_size(int(v))
-                    return f"Webcam 检测分辨率已设为 {v}"
+                    return f"检测分辨率={v}"
 
-                def change_interval(v):
-                    cam.interval = max(1, int(v))
-                    return f"跳帧间隔已设为 {cam.interval}"
+                def start_live(use_vcam):
+                    msg = live.start(-1, virtual_cam=bool(use_vcam))
+                    return msg, live.get_preview()
 
-                webcam.stream(
-                    fn=cam.predict_stream,
-                    inputs=[webcam],
-                    outputs=[preview, status_cam],
-                    stream_every=stream_every,
-                    concurrency_limit=8,
-                    trigger_mode="always_last",
-                    time_limit=None,
+                def stop_live():
+                    msg = live.stop()
+                    return msg, live.get_preview()
+
+                def refresh_ui():
+                    return live.get_preview(), live.get_status()
+
+                src_cam.change(
+                    fn=live.set_source, inputs=[src_cam], outputs=[status_cam]
                 )
-                src_cam.change(fn=cam.set_source, inputs=[src_cam], outputs=[status_cam])
-                width_sl.change(fn=change_width, inputs=[width_sl], outputs=[status_cam])
+                width_sl.change(
+                    fn=change_width, inputs=[width_sl], outputs=[status_cam]
+                )
                 det.change(fn=change_det, inputs=[det], outputs=[status_cam])
-                interval.change(fn=change_interval, inputs=[interval], outputs=[status_cam])
+                start_btn.click(
+                    fn=start_live,
+                    inputs=[vcam_ck],
+                    outputs=[status_cam, preview],
+                )
+                stop_btn.click(fn=stop_live, outputs=[status_cam, preview])
+                ui_timer = gr.Timer(ui_refresh)
+                ui_timer.tick(fn=refresh_ui, outputs=[preview, status_cam])
 
             with gr.Tab("② 离线视频换脸"):
                 gr.Markdown(
@@ -539,12 +536,13 @@ def main() -> int:
             "Tab③ 需要系统 PATH 中的 **ffmpeg**。"
         )
 
-    demo.queue(default_concurrency_limit=8).launch(
+    # Keep overall concurrency modest; webcam stream already uses concurrency_limit=1.
+    demo.queue(default_concurrency_limit=2).launch(
         server_name=args.host,
         server_port=args.port,
         show_error=True,
     )
-    cam.stop()
+    live.stop()
     return 0
 
 

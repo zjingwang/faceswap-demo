@@ -88,8 +88,11 @@ python app.py
 ### Tab1：摄像头实时换脸
 
 1. 上传源脸（embedding 只提取一次）
-2. 开启摄像头
-3. 帧压到 320 宽进 AI，再拉回原尺寸；AI 忙时丢弃/覆盖当前帧，不堆积
+2. **推荐**：点「启动本地 OpenCV 实时窗口」——绕过 Gradio JPEG 流（Deep-Live-Cam 同类路径），在 780M 上更稳
+3. 或在页内开 Gradio 摄像头：`stream_every` 默认 **0.12s**（约 8Hz），必须与 AI 耗时匹配；过快会堵死队列（流回调≈0）
+4. 也可命令行：`python live_local.py --source input/obama.jpg --width 320 --det-size 160`
+
+> 780M 上 buffalo_l + inswapper 单帧常见 100–200ms（约 5–10 AI FPS）。Gradio 浏览器预览达不到摄像头原生 30/60FPS，属管线限制而非单纯参数问题。
 
 ### Tab2：离线视频换脸 + 人声（双栏）
 

@@ -13,3 +13,4 @@ gradio
 tqdm
 onnx
 Pillow
+pyvirtualcam

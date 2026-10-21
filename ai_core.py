@@ -38,8 +38,16 @@ def build_sess_options(intra: int = 4, inter: int = 1) -> ort.SessionOptions:
     return opts
 
 
-def ensure_models(det_size: int = 320, intra: int = 4, inter: int = 1):
-    """Lazy-load FaceAnalysis + inswapper once for the whole process."""
+def ensure_models(
+    det_size: int = 320,
+    intra: int = 4,
+    inter: int = 1,
+    live: bool = False,
+):
+    """Lazy-load FaceAnalysis + inswapper once for the whole process.
+
+    live=True skips genderage (unused by swap) for slightly lower webcam latency.
+    """
     global _app, _swapper, _sess_opts
     if _app is not None and _swapper is not None:
         return _app, _swapper
@@ -50,12 +58,15 @@ def ensure_models(det_size: int = 320, intra: int = 4, inter: int = 1):
     _sess_opts = build_sess_options(intra, inter)
     print(f"[ai_core] ORT providers = {ORT_PROVIDERS}", flush=True)
     print("[ai_core] 加载 buffalo_l ...", flush=True)
-    _app = FaceAnalysis(
+    fa_kwargs = dict(
         name="buffalo_l",
         root=BASE,
         providers=ORT_PROVIDERS,
         sess_options=_sess_opts,
     )
+    if live:
+        fa_kwargs["allowed_modules"] = ["detection", "recognition"]
+    _app = FaceAnalysis(**fa_kwargs)
     _app.prepare(ctx_id=0, det_size=(det_size, det_size))
     print("[ai_core] 加载 inswapper_128.onnx ...", flush=True)
     _swapper = insightface.model_zoo.get_model(
