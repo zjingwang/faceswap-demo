@@ -1,6 +1,6 @@
 # faceswap-demo
 
-基于本地 ONNX 模型的**纯 CPU 照片换脸** Demo。使用 insightface 的 `buffalo_l` 人脸分析模型 + `inswapper_128` 换脸模型，提供命令行和 Web（Gradio）两种使用方式。
+基于本地 ONNX 模型的**纯 CPU 照片换脸** Demo。使用 insightface 的 `buffalo_l` 人脸分析模型 + `inswapper_128` 换脸模型，提供命令行、Web（Gradio）与摄像头实时三种使用方式。
 
 > 所有推理都在本机完成（`CPUExecutionProvider`），**不需要 GPU**，图片不会上传到任何服务器。
 
@@ -8,6 +8,7 @@
 
 - 🧠 纯 CPU 推理，无显卡/虚拟机也能跑，有 GPU 同样可用
 - 🌐 Gradio Web 界面，浏览器可视化操作
+- 🎥 摄像头实时换脸（纯 CPU，丢帧保时效，低帧率准实时）
 - ⌨️ 命令行脚本，适合批量/脚本化调用
 - 📦 模型通过脚本一键下载，示例图片随仓库提供
 
@@ -16,14 +17,15 @@
 ```
 faceswap-demo/
 ├── faceswap.py          # 命令行换脸脚本
-├── web_app.py           # Gradio Web 界面（纯 CPU）
+├── web_app.py           # Gradio Web 界面（单张换脸，纯 CPU）
+├── webcam_realtime.py   # Gradio 摄像头实时换脸（纯 CPU，丢帧保时效）
 ├── download_models.py   # 下载模型脚本（buffalo_l + inswapper_128.onnx）
 ├── requirements.txt     # Python 依赖
 ├── models/              # 模型目录（不入库，运行 download_models.py 生成）
 │   ├── buffalo_l/       #   insightface 人脸分析模型包（约 340MB）
 │   └── inswapper_128.onnx   #   换脸模型（约 550MB）
 ├── input/               # 示例图片（源脸 / 目标）
-├── output/              # 换脸结果示例（运行后自动生成）
+├── output/              # 演示结果（biden_obama 等入库；web_*.png/jpg 为页面生成物，不入库）
 ├── venv/                # 本地 Python 虚拟环境（不入库）
 └── README.md
 ```
@@ -49,7 +51,9 @@ python -m pip install -r requirements.txt
 python download_models.py
 ```
 
-> 说明：`venv/` 和 `models/` 都没有入库。前者是本地环境不应上传；后者因单文件超过 GitHub 100MB 限制由脚本按需下载，克隆仓库后执行上一步即可得到完整模型。
+> 说明：`venv/`、`models/` 以及网页生成的 `output/web_result_*.png`、`output/web_compare_*.jpg` 都没有入库。
+> `venv/` 是本地环境不应上传；`models/` 因单文件超过 GitHub 100MB 限制由脚本按需下载，克隆仓库后执行上一步即可得到完整模型；
+> `output/web_*` 是 web_app.py 每次换脸自动生成的结果，运行时会在本地重新生成，无需入库。
 
 ## 运行 Web 界面
 
@@ -65,6 +69,33 @@ python web_app.py --port 7890   # 使用其他端口
 2. **② 目标照片**：被换脸的照片
 3. 点击 **🔄 开始换脸**
 4. 结果与「源 | 目标 | 结果」对比图同时保存到项目 `output/` 目录
+
+## 运行实时换脸（摄像头 Web 端）
+
+```bash
+# 在项目根目录（已激活 venv）执行
+python webcam_realtime.py            # 默认 http://127.0.0.1:7861
+python webcam_realtime.py --port 7891 --det-size 192
+```
+
+浏览器打开 **http://127.0.0.1:7861**：
+
+1. 上传一张**源脸照片**（提供脸；特征只在上传时提取一次）
+2. 点击**摄像头组件**开启推流（被换脸的画面）
+3. 右侧预览以**丢帧保时效**方式持续出图：
+   后台只处理「最新一帧」，未处理完的帧直接丢弃，宁可降帧率也绝不堆积延迟
+
+> ⚠️ **纯 CPU 下每帧通常需要数秒（低帧率准实时，不是 30fps 视频）**。
+> 若机器有 GPU，把 `webcam_realtime.py` 里两处 `providers` 改为
+> `["CUDAExecutionProvider", "CPUExecutionProvider"]` 即可显著提速，其余逻辑无需改动。
+
+| 参数 | 说明 | 默认值 |
+| --- | --- | --- |
+| `--port` | 监听端口 | `7861` |
+| `--width` | 输入帧等比例压到的宽度（越小越快） | `320` |
+| `--det-size` | 人脸检测分辨率（越小越快） | `320` |
+| `--det-interval` | 跳帧：每 N 帧才检测一次人脸 | `3` |
+| `--intra-threads` / `--inter-threads` | ONNX 线程数调优（inter 建议保持 1） | `4` / `1` |
 
 ## 命令行使用
 
@@ -99,6 +130,10 @@ python faceswap.py \
 - **检测不到人脸**：戴口罩、侧面、过暗的人脸检测不到，属预期行为，请换更清晰/更居中的照片。多张人脸时，源图取第 1 张，目标图换面积最大的一张。
 - **不要开启「面部修复」**（GFPGAN/CodeFormer 类）：那是给有 GPU 的机器用的，纯 CPU 上开启会非常慢甚至卡死。
 - **Web 界面只监听 `127.0.0.1`**：仅本机可访问，不会对外网开放。
+- **实时换脸帧率低、每帧好几秒？**：这是纯 CPU 的预期表现（丢帧保时效只保证不卡顿、不堆积，并不提升帧率）；想要流畅实时请使用带 GPU 的机器。
+- **摄像头首次出图慢**：模型只在启动时加载一次（通常数秒到十几秒），预热完成后即按策略持续出帧。
+- **`import gradio` 报 `Unknown scheme for proxy URL`**：通常是系统环境变量里配置了 `socks://` 等自定义代理导致。临时清理代理后启动即可：
+  `env -u HTTP_PROXY -u HTTPS_PROXY -u ALL_PROXY -u NO_PROXY -u http_proxy -u https_proxy -u all_proxy -u no_proxy -u ftp_proxy python web_app.py`
 
 ## License
 
