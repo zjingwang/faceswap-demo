@@ -79,9 +79,19 @@ def main() -> int:
     else:
         zpath = os.path.join(out_dir, "buffalo_l.zip")
         download(BUFFALO_L_URL, zpath)
-        print(f"[2/2] 解压 {zpath} -> {out_dir}")
+        print(f"[2/2] 解压 {zpath} -> {buf_dir}")
+        os.makedirs(buf_dir, exist_ok=True)
         with zipfile.ZipFile(zpath) as z:
-            z.extractall(out_dir)
+            # Official zip may be flat (*.onnx at archive root) or nested (buffalo_l/*.onnx).
+            for info in z.infolist():
+                if info.is_dir():
+                    continue
+                name = os.path.basename(info.filename.replace("\\", "/"))
+                if name not in BUFFALO_L_FILES:
+                    continue
+                target = os.path.join(buf_dir, name)
+                with z.open(info) as src, open(target, "wb") as dst:
+                    dst.write(src.read())
         os.remove(zpath)
         # 校验
         still_missing = [f for f in BUFFALO_L_FILES
@@ -89,9 +99,13 @@ def main() -> int:
         if still_missing:
             sys.exit(f"[错误] buffalo_l 解压后仍缺少: {still_missing}")
 
-    print("\n完成! 现在可以运行:")
+    print("\n完成! 模型路径:")
+    print(f"  {swapper}")
+    print(f"  {buf_dir}/")
+    print("现在可以运行 (AMD DirectML):")
+    print("  python app.py                # 主入口 http://127.0.0.1:7860")
+    print("  python web_app.py            # 同上")
     print("  python faceswap.py --source input/biden.jpg --target input/obama.jpg --output output/demo.png")
-    print("  python web_app.py            # 打开 http://127.0.0.1:7860")
     return 0
 
 

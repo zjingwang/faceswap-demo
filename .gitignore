@@ -1,7 +1,6 @@
 # ============================================================
 # faceswap-demo .gitignore
-# 本机虚拟环境与缓存一律不上传；模型、示例图片、演示结果都入库；
-# 网页生成的结果(output/web_*)一律不入库。
+# 本机虚拟环境、缓存、模型、input/output 照片与视频一律不上传。
 # ============================================================
 
 # ---------- Python 虚拟环境（绝不提交） ----------
@@ -54,18 +53,33 @@ docs/_build/
 *.log
 pip-log.txt
 
-# ---------- Web 端生成的换脸结果（运行 web_app.py 时自动产生，不入库） ----------
-output/web_result_*.png
-output/web_compare_*.jpg
+# ---------- input / output 本地照片与视频（不入库） ----------
+input/*.jpg
+input/*.jpeg
+input/*.png
+input/*.webp
+input/*.gif
+input/*.mp4
+input/*.mov
+input/*.avi
+input/*.mkv
+input/*.webm
+output/*.jpg
+output/*.jpeg
+output/*.png
+output/*.webp
+output/*.gif
+output/*.mp4
+output/*.mov
+output/*.avi
+output/*.mkv
+output/*.webm
+output/_tmp_*
 
 # ============================================================
-# 注意：以下目录里的演示资产，会随仓库一起上传（不要 ignore）：
-#   input/    —— 示例图片
-#   output/   —— 演示结果（biden_obama.png、sheet_*.jpg 等）
+# models/ 单个文件超过 GitHub 100MB，不入库：
+# 克隆后运行 `python download_models.py` 即可下载全部模型。
 #
-#   output/web_result_*.png 与 output/web_compare_*.jpg
-#   是 web_app.py 每次换脸自动生成的临时结果，已在上方 ignore。
-#
-#   models/ 因为单个文件超过 GitHub 100MB 限制，选择不入库：
-#   克隆后运行 `python download_models.py` 即可下载全部模型。
+# 已跟踪的演示图（如 input/biden.jpg）仍保留在仓库历史中；
+# 新增的 input/output 媒体一律不提交。
 # ============================================================

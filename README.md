@@ -1,139 +1,128 @@
 # faceswap-demo
 
-基于本地 ONNX 模型的**纯 CPU 照片换脸** Demo。使用 insightface 的 `buffalo_l` 人脸分析模型 + `inswapper_128` 换脸模型，提供命令行、Web（Gradio）与摄像头实时三种使用方式。
+基于本地 ONNX 的 **AMD DirectML 换脸** Web 平台。使用 insightface `buffalo_l`（检测/关键点/512-d embedding）+ `inswapper_128.onnx`，面向 **Ryzen + Radeon 780M（共享内存、无独显 VRAM、无 NPU）** 优化。
 
-> 所有推理都在本机完成（`CPUExecutionProvider`），**不需要 GPU**，图片不会上传到任何服务器。
+> 推理后端固定为 `['DmlExecutionProvider', 'CPUExecutionProvider']`，**不使用 CUDA**。全局 `threading.Lock`（`ai_core.INFERENCE_LOCK`）串行化 AI。
 
-## 功能特性
+## 功能
 
-- 🧠 纯 CPU 推理，无显卡/虚拟机也能跑，有 GPU 同样可用
-- 🌐 Gradio Web 界面，浏览器可视化操作
-- 🎥 摄像头实时换脸（纯 CPU，丢帧保时效，低帧率准实时）
-- ⌨️ 命令行脚本，适合批量/脚本化调用
-- 📦 模型通过脚本一键下载，示例图片随仓库提供
+| Tab | 能力 |
+| --- | --- |
+| ① Webcam 实时换脸 | 摄像头推流 + 上传源脸；AI 前压到 320 宽再拉回；源脸 embedding 只提一次；上一帧未完成则丢帧 |
+| ② 离线视频换脸 | 源脸 + MP4；逐帧 `VideoCapture`/`VideoWriter`；尽量保留原音轨 |
+| ③ 究极融合（脸+声） | 双栏 UI；全员鬼畜 / 精准人脸编号；ffmpeg 抽音 + 源声音循环填充 + mux |
+
+另提供命令行 `faceswap.py` 与独立入口 `webcam_realtime.py`。
 
 ## 目录结构
 
 ```
 faceswap-demo/
-├── faceswap.py          # 命令行换脸脚本
-├── web_app.py           # Gradio Web 界面（单张换脸，纯 CPU）
-├── webcam_realtime.py   # Gradio 摄像头实时换脸（纯 CPU，丢帧保时效）
-├── download_models.py   # 下载模型脚本（buffalo_l + inswapper_128.onnx）
-├── requirements.txt     # Python 依赖
-├── models/              # 模型目录（不入库，运行 download_models.py 生成）
-│   ├── buffalo_l/       #   insightface 人脸分析模型包（约 340MB）
-│   └── inswapper_128.onnx   #   换脸模型（约 550MB）
-├── input/               # 示例图片（源脸 / 目标）
-├── output/              # 演示结果（biden_obama 等入库；web_*.png/jpg 为页面生成物，不入库）
-├── venv/                # 本地 Python 虚拟环境（不入库）
-└── README.md
+├── app.py / web_app.py  # 主 Gradio（3 Tabs）
+├── ai_core.py           # DirectML 模型加载、全局推理锁、换脸工具
+├── webcam_session.py    # 摄像头丢帧会话（embedding 缓存）
+├── voice_utils.py       # ffmpeg 抽音 / 人声对齐 / mux
+├── webcam_realtime.py   # 仅摄像头入口（可选）
+├── faceswap.py          # 命令行照片换脸
+├── download_models.py   # 下载 buffalo_l + inswapper_128.onnx
+├── requirements.txt     # onnxruntime-directml（无 CUDA）
+├── models/              # 模型目录（不入库）
+│   ├── buffalo_l/
+│   └── inswapper_128.onnx
+├── input/
+└── output/
 ```
 
-## 环境准备
+## 环境准备（Windows + AMD）
 
-需要 **Python 3.10+**（作者用 Python 3.10 验证通过）。
+需要 **Python 3.10–3.12**（推荐 3.12；3.13+ 可能缺少 DirectML 轮子）、**ffmpeg**（加入 PATH，Tab②/③ 人声封装需要）。
 
-```bash
-# 1. 克隆仓库
+```powershell
 git clone https://github.com/zjingwang/faceswap-demo.git
 cd faceswap-demo
 
-# 2. 创建虚拟环境（推荐，避免污染系统 Python）
-python3 -m venv venv
-source venv/bin/activate        # Windows: venv\Scripts\activate
+# 建议用 Python 3.12 建 venv
+py -3.12 -m venv .venv
+.\.venv\Scripts\activate
 
-# 3. 安装依赖
 python -m pip install --upgrade pip
 python -m pip install -r requirements.txt
+# insightface 可能顺带装上 CPU 版 onnxruntime，会盖掉 DirectML —— 必须卸掉：
+pip uninstall -y onnxruntime
 
-# 4. 下载模型（合计约 0.9GB，请保持网络畅通；可断点续传，重复执行会自动跳过已下载文件）
 python download_models.py
+
+winget install Gyan.FFmpeg   # 若尚未安装 ffmpeg；新开终端后再测 ffmpeg -version
 ```
 
-> 说明：`venv/`、`models/` 以及网页生成的 `output/web_result_*.png`、`output/web_compare_*.jpg` 都没有入库。
-> `venv/` 是本地环境不应上传；`models/` 因单文件超过 GitHub 100MB 限制由脚本按需下载，克隆仓库后执行上一步即可得到完整模型；
-> `output/web_*` 是 web_app.py 每次换脸自动生成的结果，运行时会在本地重新生成，无需入库。
+### 模型放置路径
 
-## 运行 Web 界面
+| 文件 | 路径 |
+| --- | --- |
+| 换脸模型 | `models/inswapper_128.onnx`（~550MB） |
+| 人脸分析包 | `models/buffalo_l/*.onnx`（~340MB） |
 
-```bash
-# 在项目根目录（已激活 venv）执行
-python web_app.py            # 默认端口 7860
-python web_app.py --port 7890   # 使用其他端口
+手动下载（insightface v0.7）：
+
+- https://github.com/deepinsight/insightface/releases/download/v0.7/inswapper_128.onnx
+- https://github.com/deepinsight/insightface/releases/download/v0.7/buffalo_l.zip → 解压到 `models/buffalo_l/`
+
+> FaceAnalysis 的 `root` 为项目根目录，buffalo_l 必须在 `<项目>/models/buffalo_l/`。
+
+### DirectML 说明
+
+- 依赖包是 **`onnxruntime-directml`**，不要同时装 `onnxruntime` / `onnxruntime-gpu`。
+- providers 显式为：`['DmlExecutionProvider', 'CPUExecutionProvider']`。
+- 780M 使用共享系统内存；视频结束后 `cap.release()` + `gc.collect()`。
+- 无 CUDA / 无 NPU 依赖。
+
+## 运行
+
+```powershell
+.\.venv\Scripts\activate
+python app.py
+# 或 python web_app.py
+# 浏览器打开 http://127.0.0.1:7860
 ```
 
-然后浏览器打开 **http://127.0.0.1:7860**：
+### Tab1：摄像头实时换脸
 
-1. **① 源脸照片**：提供人脸的照片
-2. **② 目标照片**：被换脸的照片
-3. 点击 **🔄 开始换脸**
-4. 结果与「源 | 目标 | 结果」对比图同时保存到项目 `output/` 目录
+1. 上传源脸（embedding 只提取一次）
+2. 开启摄像头
+3. 帧压到 320 宽进 AI，再拉回原尺寸；AI 忙时丢弃/覆盖当前帧，不堆积
 
-## 运行实时换脸（摄像头 Web 端）
+### Tab2：离线视频换脸 + 人声（双栏）
 
-```bash
-# 在项目根目录（已激活 venv）执行
-python webcam_realtime.py            # 默认 http://127.0.0.1:7861
-python webcam_realtime.py --port 7891 --det-size 192
+**左栏**：① 源脸照片 ② 源声音片段 ③ 目标视频 ·「全员鬼畜模式」·「精准目标人脸编号」· 启动按钮  
+**右栏**：① 最终视频 ② 中文日志
+
+- 全员鬼畜 = True：替换所有人脸  
+- = False：第 1 帧按 x 从左到右排序，只换指定编号  
+- 视频 AI 宽默认 640（再拉回原分辨率）；进度条 0–100%
+
+人声（本地可跑，非完整 RVC）：
+
+1. ffmpeg 从目标视频抽音  
+2. 若有源声音：循环/填充到视频时长后替换  
+3. 否则保留原音轨  
+4. mux → `output/fusion_final_*.mp4`
+
+> **限制**：不是 RVC/So-VITS 级音色克隆，而是 ffmpeg 最佳努力替换。可自行改 `voice_utils.process_voice`。
+
+### 命令行
+
+```powershell
+python faceswap.py --source input/biden.jpg --target input/obama.jpg --output output/demo.png
 ```
-
-浏览器打开 **http://127.0.0.1:7861**：
-
-1. 上传一张**源脸照片**（提供脸；特征只在上传时提取一次）
-2. 点击**摄像头组件**开启推流（被换脸的画面）
-3. 右侧预览以**丢帧保时效**方式持续出图：
-   后台只处理「最新一帧」，未处理完的帧直接丢弃，宁可降帧率也绝不堆积延迟
-
-> ⚠️ **纯 CPU 下每帧通常需要数秒（低帧率准实时，不是 30fps 视频）**。
-> 若机器有 GPU，把 `webcam_realtime.py` 里两处 `providers` 改为
-> `["CUDAExecutionProvider", "CPUExecutionProvider"]` 即可显著提速，其余逻辑无需改动。
-
-| 参数 | 说明 | 默认值 |
-| --- | --- | --- |
-| `--port` | 监听端口 | `7861` |
-| `--width` | 输入帧等比例压到的宽度（越小越快） | `320` |
-| `--det-size` | 人脸检测分辨率（越小越快） | `320` |
-| `--det-interval` | 跳帧：每 N 帧才检测一次人脸 | `3` |
-| `--intra-threads` / `--inter-threads` | ONNX 线程数调优（inter 建议保持 1） | `4` / `1` |
-
-## 命令行使用
-
-```bash
-python faceswap.py \
-    --source input/biden.jpg \
-    --target input/obama.jpg \
-    --output output/biden_obama.png
-```
-
-参数说明（`python faceswap.py -h`）：
-
-| 参数 | 说明 | 默认值 |
-| --- | --- | --- |
-| `--source` | 人脸来源图（提供脸） | 必填 |
-| `--target` | 目标图（被换脸） | 必填 |
-| `--output` | 输出图片路径 | `./output.png` |
-| `--models` | 存放 `inswapper_128.onnx` 的目录 | `./models` |
-| `--root` | FaceAnalysis 根目录（`buffalo_l` 位于 `<root>/models/buffalo_l`） | 项目根目录 |
-| `--det-size` | 人脸检测分辨率，越小越快（建议 320–640） | `640` |
-
-## 模型来源
-
-| 模型 | 大小 | 来源 |
-| --- | --- | --- |
-| `buffalo_l` 模型包 | ~340MB | insightface 官方 release（`deepinsight/insightface` v0.7） |
-| `inswapper_128.onnx` | ~550MB | insightface 官方 release（`deepinsight/insightface` v0.7） |
 
 ## 常见问题
 
-- **首次换脸较慢**：模型只会在第一次使用时加载（约 10 秒），之后每次约几秒。
-- **检测不到人脸**：戴口罩、侧面、过暗的人脸检测不到，属预期行为，请换更清晰/更居中的照片。多张人脸时，源图取第 1 张，目标图换面积最大的一张。
-- **不要开启「面部修复」**（GFPGAN/CodeFormer 类）：那是给有 GPU 的机器用的，纯 CPU 上开启会非常慢甚至卡死。
-- **Web 界面只监听 `127.0.0.1`**：仅本机可访问，不会对外网开放。
-- **实时换脸帧率低、每帧好几秒？**：这是纯 CPU 的预期表现（丢帧保时效只保证不卡顿、不堆积，并不提升帧率）；想要流畅实时请使用带 GPU 的机器。
-- **摄像头首次出图慢**：模型只在启动时加载一次（通常数秒到十几秒），预热完成后即按策略持续出帧。
-- **`import gradio` 报 `Unknown scheme for proxy URL`**：通常是系统环境变量里配置了 `socks://` 等自定义代理导致。临时清理代理后启动即可：
-  `env -u HTTP_PROXY -u HTTPS_PROXY -u ALL_PROXY -u NO_PROXY -u http_proxy -u https_proxy -u all_proxy -u no_proxy -u ftp_proxy python web_app.py`
+- 缺少模型：先跑 `python download_models.py`  
+- 找不到 ffmpeg：`winget install Gyan.FFmpeg` 后确认 `ffmpeg -version`  
+- DirectML 回退 CPU / `get_available_providers` 异常：`pip uninstall -y onnxruntime` 后确认 `pip show onnxruntime-directml`，再 `python -c "import onnxruntime as ort; print(ort.get_available_providers())"` 应含 `DmlExecutionProvider`
+- `download_models.py` 解压后应出现 `models/buffalo_l/*.onnx`（官方 zip 可能是扁平布局，脚本会归位）
+- 不要开 GFPGAN/CodeFormer：共享显存机器上极易卡死  
+
 
 ## License
 

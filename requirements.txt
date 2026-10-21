@@ -1,20 +1,15 @@
-# faceswap-demo 依赖（以下版本为作者验证过的纯 CPU 环境）
-# 安装: pip install -r requirements.txt
+# faceswap-demo — AMD DirectML (无 CUDA / 无 NVIDIA 包)
+# 安装:
+#   pip install -r requirements.txt
+#   pip uninstall -y onnxruntime   # insightface 可能拉入 CPU 版，必须卸掉以免覆盖 DirectML
+# 请只保留 onnxruntime-directml，不要同时装 onnxruntime / onnxruntime-gpu。
+# Tab②/③ 人声封装还需要系统 PATH 中的 ffmpeg: winget install Gyan.FFmpeg
 
-# insightface —— 提供 FaceAnalysis (buffalo_l) 与 inswapper 换脸模型加载。
-# 注意: 作者的测试环境安装的是 GitHub 主分支的 insightface 2.1；
-#   PyPI 上的稳定版是 0.7.3，如遇 API 不兼容，可改用：
-#   pip install git+https://github.com/deepinsight/insightface.git
-insightface
-
-# onnxruntime —— 纯 CPU 推理后端（如需 GPU，请改用 onnxruntime-gpu 并自行配置）
-onnxruntime
-
-# OpenCV —— 图片读写与预处理
+onnxruntime-directml==1.24.4
+insightface>=0.7.3
 opencv-python
-
-# Gradio —— Web 界面
-gradio
-
-# 数值计算（insightface / opencv 的依赖也会自动带上）
 numpy
+gradio
+tqdm
+onnx
+Pillow
